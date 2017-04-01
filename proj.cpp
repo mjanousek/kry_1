@@ -31,7 +31,7 @@ void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg
 
 void sendMsg(int fdSendingPipe, unsigned char *msg);
 
-unsigned char *readMsg(int fdReceivingPipe, int *pInt);
+unsigned char *readMsg(int fdReceivingPipe);
 
 void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **pVoid);
 
@@ -39,11 +39,15 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **pVoid
 DH *get_dh2048()
 ;
 
-int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
-            unsigned char *iv, unsigned char *plaintext)
-;
-int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
-            unsigned char *iv, unsigned char *ciphertext);
+int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key, unsigned char *iv, unsigned char *plaintext);
+int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext);
+
+void initAES();
+
+void decryptMsg(const void *secret, unsigned char **decryptedtext, unsigned char *str);
+int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **ciphertext);
+
+void cleanUp(void *secret);
 
 int main(int argc, char *argv[]) {
 
@@ -81,93 +85,28 @@ void startClient() {
     void *secret;
 
     int fdSendingPipe, fdReceivingPipe;
-    char const * msg = "Hello";
+    unsigned char *ciphertext;
 
     /**
      * ************************ initialization *****************************
      */
     fdSendingPipe = open(PIPE_CLIENT_2_SERVER, O_WRONLY);
-    if (fdSendingPipe < 1/* || fdReceivingPipe < 1*/){
-        perror("Open: ");
-    }
+    if (fdSendingPipe < 1/* || fdReceivingPipe < 1*/){ perror("Open: "); }
 
     fdReceivingPipe = open(PIPE_SERVER_2_CLIENT, O_RDONLY);
-    if (fdReceivingPipe < 1/* || fdReceivingPipe < 1*/){
-        perror("Open: ");
-    }
-    /**
-     * ************************ initialization *****************************
-     */
+    if (fdReceivingPipe < 1/* || fdReceivingPipe < 1*/){ perror("Open: "); }
+
     init_DH(fdSendingPipe, fdReceivingPipe, false, &secret);
+    initAES();
 
-    /**
-     * ************************ SHA ****************************************
-     */
-/* Set up the key and iv. Do I need to say to not hard code these in a
-   * real application? :-)
-   */
-
-    /* A 256 bit key */
-    unsigned char key[32];
-    unsigned char iv[16];
-    memset(key, 0, 32);
-    memset(iv, 0, 16);
-
-    size_t len = strlen((char *)secret);
-    strncpy((char *) key, (char *)secret, 31);
-    cout << "key: " << key << endl;
-    strncpy((char *) iv, (char *)secret + len - 16, 15);
-    cout << "iv: " << iv << endl;
+    unsigned char *plaintext = (unsigned char *) "Some random string, bla bla bla bla";
+    int ciphertext_len = encryptMsg(secret, plaintext, &ciphertext);
 
 
-    /* Message to be encrypted */
-    unsigned char *plaintext =
-            (unsigned char *)"The quick brown fox jumps over the lazy dog";
-
-    /* Buffer for ciphertext. Ensure the buffer is long enough for the
-     * ciphertext which may be longer than the plaintext, dependant on the
-     * algorithm and mode
-     */
-    unsigned char ciphertext[128];
-
-    /* Buffer for the decrypted text */
-    unsigned char decryptedtext[128];
-
-    int decryptedtext_len, ciphertext_len;
-
-    /* Initialise the library */
-    ERR_load_crypto_strings();
-    OpenSSL_add_all_algorithms();
-    OPENSSL_config(NULL);
-
-    /* Encrypt the plaintext */
-    int l = sizeof(plaintext) / sizeof(unsigned char);
-    cout << "Encrypt :" << l << " chars." << endl;
-    ciphertext_len = encrypt(plaintext, 128, key, iv, ciphertext);
-
-    /* Do something useful with the ciphertext here */
-    printf("Ciphertext is:\n");
-    BIO_dump_fp (stdout, (const char *)ciphertext, ciphertext_len);
-    cout << "MSG:" << ciphertext << endl;
-    //send
     write(fdSendingPipe, ciphertext, ciphertext_len);
 
+    cleanUp(secret);
 
-    /* Clean up */
-//    EVP_cleanup();
-//    ERR_free_strings();
-
-
-
-    /**
-     * ------------------------comunication---------------------------
-     */
-//    cout << "client" << endl;
-//    clientCommunication(fdSendingPipe, fdReceivingPipe, msg);
-
-    /**
-     * close pipe
-     */
     close (fdReceivingPipe);
     close (fdSendingPipe);
 }
@@ -182,76 +121,80 @@ void startServer() {
      * initialization
      */
     fdReceivingPipe = open(PIPE_CLIENT_2_SERVER, O_RDONLY);
-    if (fdReceivingPipe < 1){
-        perror("Open: ");
-    }
+    if (fdReceivingPipe < 1){ perror("Open: "); }
 
     fdSendingPipe = open(PIPE_SERVER_2_CLIENT, O_WRONLY);
-    if (fdSendingPipe < 1){
-        perror("Open: ");
-    }
+    if (fdSendingPipe < 1){ perror("Open: "); }
 
     init_DH(fdSendingPipe, fdReceivingPipe, true, &secret);
+    initAES();
 
-//    cout << "server" << endl;
-//    serverCommunication(fdSendingPipe, fdReceivingPipe, msg);
+    unsigned char *decText = new unsigned char[128];
+    unsigned char *str = readMsg(fdReceivingPipe);
 
+    decryptMsg(secret, &decText, str);
 
+    cleanUp(secret);
+    close (fdReceivingPipe);
+    close (fdSendingPipe);
+}
 
-/* A 256 bit key */
+void cleanUp(void *secret) {
+    OPENSSL_free(secret);
+    EVP_cleanup();
+    ERR_free_strings();
+}
+
+int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **ciphertext) {
+    int ciphertext_len;
+    *ciphertext = new unsigned char[128];
+
     unsigned char key[32];
     unsigned char iv[16];
     memset(key, 0, 32);
     memset(iv, 0, 16);
 
-    size_t len = strlen((char *)secret);
     strncpy((char *) key, (char *)secret, 31);
-    cout << "key: " << key << endl;
-    strncpy((char *) iv, (char *)secret + len - 16, 15);
-    cout << "iv: " << iv << endl;
+//    cout << "key: " << key << endl;
+    strncpy((char *) iv, (char *)secret + 32, 15);
+//    cout << "iv: " << iv << endl;
+    ciphertext_len = encrypt(plaintext, 128, key, iv, *ciphertext);
 
-    /* Buffer for ciphertext. Ensure the buffer is long enough for the
-     * ciphertext which may be longer than the plaintext, dependant on the
-     * algorithm and mode
-     */
-    unsigned char ciphertext[128];
+    /* Do something useful with the ciphertext here */
+//    printf("Ciphertext is:\n");
+//    BIO_dump_fp (stdout, (const char *) *ciphertext, ciphertext_len);
+    cout << "MSG:" << ciphertext << endl;
+    //send
+    return ciphertext_len;
+}
 
-    /* Buffer for the decrypted text */
-    unsigned char decryptedtext[128];
-
-    int decryptedtext_len, ciphertext_len;
-    cout << "0:" << endl;
-    /* Initialise the library */
+void initAES() {
     ERR_load_crypto_strings();
     OpenSSL_add_all_algorithms();
     OPENSSL_config(NULL);
+}
 
-    cout << "1:" << endl;
-    unsigned char *str = readMsg(fdReceivingPipe, &ciphertext_len);
-    cout << "MSG:" << str << endl;
-    strcpy((char *) ciphertext, (char *) str);
-    cout << "MSG_LEN:" << ciphertext_len << endl;
+void decryptMsg(const void *secret, unsigned char **decryptedtext, unsigned char *str) {/* A 256 bit key */
+    unsigned char key[32];
+    unsigned char iv[16];
+    memset(key, 0, 32);
+    memset(iv, 0, 16);
+
+    strncpy((char *) key, (char *)secret, 31);
+    cout << "key: " << key << endl;
+    strncpy((char *) iv, (char *)secret + 32, 15);
+    cout << "iv: " << iv << endl;
+
+    int decryptedtext_len;
+
     /* Decrypt the ciphertext */
-    decryptedtext_len = decrypt(ciphertext, 128, key, iv,
-                                decryptedtext);
-
+    decryptedtext_len = decrypt(str, 128, key, iv, *decryptedtext);
     /* Add a NULL terminator. We are expecting printable text */
-    decryptedtext[decryptedtext_len] = '\0';
+    (*decryptedtext)[decryptedtext_len] = '\0';
 
     /* Show the decrypted text */
     printf("Decrypted text is:\n");
-    printf("%s\n", decryptedtext);
-
-
-
-
-
-//    OPENSSL_free(secret);
-    /**
-     * close pipe
-     */
-    close (fdReceivingPipe);
-    close (fdSendingPipe);
+    printf("%s\n", *decryptedtext);
 }
 
 
@@ -292,12 +235,12 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **secre
 
         /* Receive the public key from the peer. In this example we're just hard coding a value */
         int len;
-        unsigned char *received_pub_key = readMsg(fdReceivingPipe, &len);
+        unsigned char *received_pub_key = readMsg(fdReceivingPipe);
         if (0 == (BN_dec2bn(&pubkey, (char *) received_pub_key)));// handleErrors();
     } else {
         /* Receive the public key from the peer. In this example we're just hard coding a value */
         int len;
-        unsigned char *received_pub_key = readMsg(fdReceivingPipe, &len);
+        unsigned char *received_pub_key = readMsg(fdReceivingPipe);
         if (0 == (BN_dec2bn(&pubkey, (char *) received_pub_key)));// handleErrors();
 
         unsigned char *pub_key_2_send = (unsigned char *) BN_bn2dec(privkey->pub_key);
@@ -310,11 +253,8 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **secre
 
 /* Do something with the shared secret */
 /* Note secret_size may be less than DH_size(privkey) */
-    printf("The shared secret is:\n");
-    BIO_dump_fp(stdout, (const char *) *secret, secret_size);
-
-/* Clean up */
-    cout << *secret << endl;
+//    printf("The shared secret is:\n");
+//    BIO_dump_fp(stdout, (const char *) *secret, secret_size);
 
     BN_free(pubkey);
     DH_free(privkey);
@@ -324,9 +264,9 @@ void sendMsg(int fdSendingPipe, unsigned char *msg){
     write(fdSendingPipe, msg, strlen((const char *) msg) + 1);
 }
 
-unsigned char *readMsg(int fdReceivingPipe, int *pInt) {
+unsigned char *readMsg(int fdReceivingPipe) {
     unsigned char * buf = new unsigned char[4096];
-    *pInt = (int) read(fdReceivingPipe, buf, 2048);
+    read(fdReceivingPipe, buf, 2048);
     return buf;
 }
 
