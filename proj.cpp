@@ -5,10 +5,12 @@
 #include <string.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+
 #include <openssl/dh.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/conf.h>
+#include <openssl/sha.h>
 
 using namespace std;
 
@@ -20,34 +22,21 @@ static const char *const PIPE_CLIENT_2_SERVER = "xjanou14_pipe_c2s";
 #define MSGLEN 64;
 
 int log(string mode, string message);
-
 void startServer();
-
 void startClient();
-
-void clientCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
-
-void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
-
+//void clientCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
+//void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
 void sendMsg(int fdSendingPipe, unsigned char *msg);
-
 unsigned char *readMsg(int fdReceivingPipe);
-
 void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **pVoid);
-
-// pre generated DH params
-DH *get_dh2048()
-;
-
+DH *getDH2048();
 int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key, unsigned char *iv, unsigned char *plaintext);
 int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key, unsigned char *iv, unsigned char *ciphertext);
-
 void initAES();
-
 void decryptMsg(const void *secret, unsigned char **decryptedtext, unsigned char *str);
 int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **ciphertext);
-
 void cleanUp(void *secret);
+void sha256Ecription(unsigned char *text, unsigned char **buf);
 
 int main(int argc, char *argv[]) {
 
@@ -85,7 +74,7 @@ void startClient() {
     void *secret;
 
     int fdSendingPipe, fdReceivingPipe;
-    unsigned char *ciphertext;
+    unsigned char *ciphertext = new unsigned char[256];
 
     /**
      * ************************ initialization *****************************
@@ -100,10 +89,20 @@ void startClient() {
     initAES();
 
     unsigned char *plaintext = (unsigned char *) "Some random string, bla bla bla bla";
+
     int ciphertext_len = encryptMsg(secret, plaintext, &ciphertext);
 
-
     write(fdSendingPipe, ciphertext, ciphertext_len);
+    delete [] ciphertext;
+
+    unsigned char *buffer = new unsigned char[65];
+    sha256Ecription(plaintext, &buffer);
+    cout << "Original hash: " << buffer << endl;
+//
+    unsigned char *serverHash = readMsg(fdReceivingPipe);
+    cout << "Server hash: " << serverHash << endl;
+    delete [] serverHash;
+//    cout << "Compare: " << strcmp((char *)buffer, (char *)serverHash) << endl;
 
     cleanUp(secret);
 
@@ -129,10 +128,20 @@ void startServer() {
     init_DH(fdSendingPipe, fdReceivingPipe, true, &secret);
     initAES();
 
-    unsigned char *decText = new unsigned char[128];
+    unsigned char *decText = new unsigned char[256];
     unsigned char *str = readMsg(fdReceivingPipe);
 
     decryptMsg(secret, &decText, str);
+    delete [] str;
+
+    unsigned char *buffer = new unsigned char[65];
+    sha256Ecription(decText, &buffer);
+    cout << "Server hash: " << buffer << endl;
+
+    //send hash
+    write(fdSendingPipe, buffer, 65);
+
+    delete [] decText;
 
     cleanUp(secret);
     close (fdReceivingPipe);
@@ -147,7 +156,6 @@ void cleanUp(void *secret) {
 
 int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **ciphertext) {
     int ciphertext_len;
-    *ciphertext = new unsigned char[128];
 
     unsigned char key[32];
     unsigned char iv[16];
@@ -161,7 +169,7 @@ int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **cip
     ciphertext_len = encrypt(plaintext, 128, key, iv, *ciphertext);
 
     /* Do something useful with the ciphertext here */
-//    printf("Ciphertext is:\n");
+    printf("Ciphertext is:\n");
 //    BIO_dump_fp (stdout, (const char *) *ciphertext, ciphertext_len);
     cout << "MSG:" << ciphertext << endl;
     //send
@@ -194,7 +202,7 @@ void decryptMsg(const void *secret, unsigned char **decryptedtext, unsigned char
 
     /* Show the decrypted text */
     printf("Decrypted text is:\n");
-    printf("%s\n", *decryptedtext);
+//    printf("%s\n", *decryptedtext);
 }
 
 
@@ -210,7 +218,7 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **secre
 //    if(NULL == (privkey = DH_new()));// handleErrors();
 //    if(1 != DH_generate_parameters_ex(privkey, 2048, DH_GENERATOR_2, NULL));// handleErrors();
 
-    privkey = get_dh2048();
+    privkey = getDH2048();
 
     if(1 != DH_check(privkey, &codes));// handleErrors();
     if(codes != 0)
@@ -237,11 +245,13 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **secre
         int len;
         unsigned char *received_pub_key = readMsg(fdReceivingPipe);
         if (0 == (BN_dec2bn(&pubkey, (char *) received_pub_key)));// handleErrors();
+        delete [] received_pub_key;
     } else {
         /* Receive the public key from the peer. In this example we're just hard coding a value */
         int len;
         unsigned char *received_pub_key = readMsg(fdReceivingPipe);
         if (0 == (BN_dec2bn(&pubkey, (char *) received_pub_key)));// handleErrors();
+        delete [] received_pub_key;
 
         unsigned char *pub_key_2_send = (unsigned char *) BN_bn2dec(privkey->pub_key);
         sendMsg(fdSendingPipe, pub_key_2_send);
@@ -265,41 +275,44 @@ void sendMsg(int fdSendingPipe, unsigned char *msg){
 }
 
 unsigned char *readMsg(int fdReceivingPipe) {
-    unsigned char * buf = new unsigned char[4096];
+    cout<< "0" << endl;
+    unsigned char * buf = new unsigned char[2048];
+    cout<< "1" << endl;
     read(fdReceivingPipe, buf, 2048);
+    cout<< "2" << endl;
     return buf;
 }
 
-void clientCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg) {
-    char buf [100];
-
-    for(int i = 0; i < 3; i++) {
-        write(fdSendingPipe, msg, strlen(msg) + 1);
-
-        /**
-         * read
-         */
-        int size = read(fdReceivingPipe, buf, 100);
-        printf("%d:%s\n", size, buf);
-    }
-}
-
-void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg) {
-    char buf [100];
-
-    for(int i = 0; i < 3; i++) {
-        /**
-         * read
-         */
-        int size = read(fdReceivingPipe, buf, 100);
-        printf("%d:%s\n", size, buf);
-
-        /**
-         * write
-         */
-        write(fdSendingPipe, msg, strlen(msg) + 1);
-    }
-}
+//void clientCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg) {
+//    char buf [100];
+//
+//    for(int i = 0; i < 3; i++) {
+//        write(fdSendingPipe, msg, strlen(msg) + 1);
+//
+//        /**
+//         * read
+//         */
+//        int size = read(fdReceivingPipe, buf, 100);
+//        printf("%d:%s\n", size, buf);
+//    }
+//}
+//
+//void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg) {
+//    char buf [100];
+//
+//    for(int i = 0; i < 3; i++) {
+//        /**
+//         * read
+//         */
+//        int size = read(fdReceivingPipe, buf, 100);
+//        printf("%d:%s\n", size, buf);
+//
+//        /**
+//         * write
+//         */
+//        write(fdSendingPipe, msg, strlen(msg) + 1);
+//    }
+//}
 
 int log(string mode, string message){
     cout << mode << ": " << message << endl;
@@ -331,6 +344,7 @@ int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
     if(1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len))
         ; //handleErrors();
     ciphertext_len = len;
+    cout << "LEN:" << len << endl;
 
     /* Finalise the encryption. Further ciphertext bytes may be written at
      * this stage.
@@ -383,6 +397,27 @@ int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
     return plaintext_len;
 }
 
+/**
+ * ***************************** SHA 256 *********************************
+ */
+
+void sha256Ecription(unsigned char *text, unsigned char **buf)
+{
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256_CTX sha_256;
+    SHA256_Init(&sha_256);
+    SHA256_Update(&sha_256, text, strlen((char *)text));
+    SHA256_Final(hash, &sha_256);
+
+    int i = 0;
+    for(i = 0; i < SHA256_DIGEST_LENGTH; i++)
+    {
+        sprintf(((char *) *buf) + (i * 2), "%02x", hash[i]);
+    }
+
+    (*buf)[64] = 0;
+}
+
 // pre-generated DH params
 /*-----BEGIN DH PARAMETERS-----
 MIIBCAKCAQEA11wKvHPFFtgQCGMhBzenMfyM45Md1P/vctW3CISnmPLzbfBpX5xw
@@ -392,7 +427,7 @@ MIIBCAKCAQEA11wKvHPFFtgQCGMhBzenMfyM45Md1P/vctW3CISnmPLzbfBpX5xw
         eVVkcJKI4TaByElOScXbQbRYaf/lL7+szYw77IfWiCVQCNlHtKcvS43Dm8Idkq7x
         N3r7NsoBIUdUE3j9h/Us8NAizqaB155W0wIBAg==
 -----END DH PARAMETERS-----*/
-DH *get_dh2048()
+DH *getDH2048()
 {
     static unsigned char dh2048_p[]={
             0xD7,0x5C,0x0A,0xBC,0x73,0xC5,0x16,0xD8,0x10,0x08,0x63,0x21,
