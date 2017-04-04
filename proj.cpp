@@ -14,18 +14,12 @@
 
 using namespace std;
 
-const string CLIENT = "[CLIENT]: ";
-const string SERVER = "[SERVER]: ";
-
 static const char *const PIPE_SERVER_2_CLIENT = "xjanou14_pipe_s2c";
 static const char *const PIPE_CLIENT_2_SERVER = "xjanou14_pipe_c2s";
-#define MSGLEN 64;
 
 int log(string mode, string message);
 void startServer();
 void startClient();
-//void clientCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
-//void serverCommunication(int fdSendingPipe, int fdReceivingPipe, const char *msg);
 void sendMsg(int fdSendingPipe, unsigned char *msg);
 unsigned char *readMsg(int fdReceivingPipe);
 void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **pVoid);
@@ -42,6 +36,8 @@ void oneClientCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe, 
 
 void oneServerCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe);
 
+void encryptAndSend(const void *secret, int fdSendingPipe, unsigned char *plaintext);
+
 int main(int argc, char *argv[]) {
 
     if(argc < 2){
@@ -51,21 +47,18 @@ int main(int argc, char *argv[]) {
 
     string mode(argv[1]);
 
-    //create pipes
-
+    //Vytvoreni pojmenovanych rour
     int result1 = mkfifo(PIPE_CLIENT_2_SERVER, S_IRUSR | S_IWUSR);
     if (result1 < 0) {
-        perror ("mknod");
-//        exit (2);
+        perror ("mknod"); // ignorovat, pipy mohli byt vytvoreny drive
     }
 
     int result2 = mkfifo(PIPE_SERVER_2_CLIENT, S_IRUSR | S_IWUSR);
     if (result2 < 0) {
-        perror ("mknod");
-//        exit (2);
+        perror ("mknod"); // ignorovat, pipy mohli byt vytvoreny drive
     }
 
-    log(mode, "Start");
+    // start modu klient nebo server
     if(mode=="-s"){
         startServer();
     } else {
@@ -74,87 +67,92 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
+/**
+ * Spusti cinnost programu v modu klient
+ */
 void startClient() {
+    // sdilene tajemstvi vytvorene algoritmem DH
     void *secret;
 
+    // pojmenovane roury pro komunikaci se serverem
     int fdSendingPipe, fdReceivingPipe;
 
 
-    /**
-     * ************************ initialization *****************************
-     */
+    // otevreni routy pro odesilani
     fdSendingPipe = open(PIPE_CLIENT_2_SERVER, O_WRONLY);
     if (fdSendingPipe < 1/* || fdReceivingPipe < 1*/){ perror("Open: "); }
-
+    //otevreni roury pro prijimani
     fdReceivingPipe = open(PIPE_SERVER_2_CLIENT, O_RDONLY);
     if (fdReceivingPipe < 1/* || fdReceivingPipe < 1*/){ perror("Open: "); }
 
+    //inicializace DH a AES
     init_DH(fdSendingPipe, fdReceivingPipe, false, &secret);
     initAES();
 
     // plain text
     unsigned char *plaintext = (unsigned char *) "Some random string, bla bla bla bla";
 
-    // send msg, recv hash and compare hashes
+    // odesle zpravu, prijme hash a porovna ho s hashem zpravy
     oneClientCycle(secret, fdSendingPipe, fdReceivingPipe, plaintext);
 
+    // uvolneni pameti a zavreni rour
     cleanUp(secret);
-
     close (fdReceivingPipe);
     close (fdSendingPipe);
 }
-
+/**
+ * Spusti cinnost programu v modu klient
+ */
 void startServer() {
-
+    // sdilene tajemstvi vytvorene algoritmem DH
     void *secret;
+
+    // pojmenovane roury pro komunikaci s klientem
     int fdSendingPipe, fdReceivingPipe;
     char const * msg = "Hello too";
 
-    /**
-     * initialization
-     */
+    // otevreni roury pro prijimani
     fdReceivingPipe = open(PIPE_CLIENT_2_SERVER, O_RDONLY);
     if (fdReceivingPipe < 1){ perror("Open: "); }
-
+    // otevreni routy pro odesilani
     fdSendingPipe = open(PIPE_SERVER_2_CLIENT, O_WRONLY);
     if (fdSendingPipe < 1){ perror("Open: "); }
 
     init_DH(fdSendingPipe, fdReceivingPipe, true, &secret);
     initAES();
 
+    // prijme zpravu, vytvori hash a ten odesle clientovi
     oneServerCycle(secret, fdSendingPipe, fdReceivingPipe);
 
+    // uvolneni pameti a zavreni rour
     cleanUp(secret);
     close (fdReceivingPipe);
     close (fdSendingPipe);
 }
 
 void oneServerCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe) {
-    unsigned char *decText = new unsigned char[256];
-    unsigned char *str = readMsg(fdReceivingPipe);
 
+    // prijmuti zpravy od klienta
+    unsigned char *str = readMsg(fdReceivingPipe);
+    unsigned char *decText = new unsigned char[strlen((char *)str) + 1];
+
+    //desifrovani zpravy od klienta -> ziskani plaintextu
     decryptMsg(secret, decText, str);
     delete [] str;
 
     unsigned char *buffer = new unsigned char[65];
-//    cout << "DecText: " << decText << endl;
+    // vytvoreni sha256 hashe z plaintextu prijete zpravy
     sha256Ecription(decText, &buffer);
-    cout << "Server hash: " << buffer << endl;
+    //cout << "Server hash: " << buffer << endl;
 
-    //send hash
+    // odeslani hashe zpet na klienta
     write(fdSendingPipe, buffer, 65);
 
     delete [] decText;
 }
 
 void oneClientCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe, unsigned char *plaintext) {
-    unsigned char *ciphertext = new unsigned char[256];
-    // encrypt by aes
-    int ciphertext_len = encryptMsg(secret, plaintext, &ciphertext);
-
-    // send to server
-    write(fdSendingPipe, ciphertext, ciphertext_len);
-    delete [] ciphertext;
+    encryptAndSend(secret, fdSendingPipe, plaintext);
 
     // hash
     unsigned char *buffer = new unsigned char[65];
@@ -169,6 +167,16 @@ void oneClientCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe, 
 
     delete [] buffer;
     delete [] serverHash;
+}
+
+void encryptAndSend(const void *secret, int fdSendingPipe, unsigned char *plaintext) {
+    unsigned char *ciphertext = new unsigned char[strlen((char *) plaintext) * 2 + 1];
+    // encrypt by aes
+    int ciphertext_len = encryptMsg(secret, plaintext, &ciphertext);
+
+    // send to server
+    write(fdSendingPipe, ciphertext, ciphertext_len);
+    delete [] ciphertext;
 }
 
 void cleanUp(void *secret) {
@@ -189,7 +197,7 @@ int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **cip
 //    cout << "key: " << key << endl;
     strncpy((char *) iv, (char *)secret + 32, 15);
 //    cout << "iv: " << iv << endl;
-    ciphertext_len = encrypt(plaintext, 128, key, iv, *ciphertext);
+    ciphertext_len = encrypt(plaintext, strlen((char *)plaintext), key, iv, *ciphertext);
 
     /* Do something useful with the ciphertext here */
     printf("Ciphertext is:\n");
@@ -219,7 +227,7 @@ void decryptMsg(const void *secret, unsigned char *decryptedtext, unsigned char 
     int decryptedtext_len;
 
     /* Decrypt the ciphertext */
-    decryptedtext_len = decrypt(str, 128, key, iv, decryptedtext);
+    decryptedtext_len = decrypt(str, strlen((char *) str), key, iv, decryptedtext);
     /* Add a NULL terminator. We are expecting printable text */
     decryptedtext[decryptedtext_len] = '\0';
 
