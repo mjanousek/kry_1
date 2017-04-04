@@ -17,7 +17,6 @@ using namespace std;
 static const char *const PIPE_SERVER_2_CLIENT = "xjanou14_pipe_s2c";
 static const char *const PIPE_CLIENT_2_SERVER = "xjanou14_pipe_c2s";
 
-int log(string mode, string message);
 void startServer();
 void startClient();
 void sendMsg(int fdSendingPipe, unsigned char *msg);
@@ -37,6 +36,9 @@ void oneClientCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe, 
 void oneServerCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe);
 
 void encryptAndSend(const void *secret, int fdSendingPipe, unsigned char *plaintext);
+
+void handleErrors()
+;
 
 int main(int argc, char *argv[]) {
 
@@ -90,7 +92,7 @@ void startClient() {
     initAES();
 
     // plain text
-    unsigned char *plaintext = (unsigned char *) "Some random string, bla bla bla bla";
+    unsigned char *plaintext = (unsigned char *) "Some random string, nevim co sem napsat";
 
     // odesle zpravu, prijme hash a porovna ho s hashem zpravy
     oneClientCycle(secret, fdSendingPipe, fdReceivingPipe, plaintext);
@@ -134,19 +136,23 @@ void oneServerCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe) 
 
     // prijmuti zpravy od klienta
     unsigned char *str = readMsg(fdReceivingPipe);
-    unsigned char *decText = new unsigned char[strlen((char *)str) + 1];
+    cout << "Prijmuta zprava: " << str <<endl;
+    int len = (int) (strlen((char *)str) + 1);
+    unsigned char *decText = new unsigned char[len];
 
     //desifrovani zpravy od klienta -> ziskani plaintextu
     decryptMsg(secret, decText, str);
+    cout << "Decrypt zprava: " << decText <<endl;
     delete [] str;
 
     unsigned char *buffer = new unsigned char[65];
     // vytvoreni sha256 hashe z plaintextu prijete zpravy
     sha256Ecription(decText, &buffer);
-    //cout << "Server hash: " << buffer << endl;
+    cout << "Server hash: " << buffer << endl;
 
+    //TODO new function
     // odeslani hashe zpet na klienta
-    write(fdSendingPipe, buffer, 65);
+    encryptAndSend(secret, fdSendingPipe, buffer);
 
     delete [] decText;
 }
@@ -161,18 +167,34 @@ void oneClientCycle(const void *secret, int fdSendingPipe, int fdReceivingPipe, 
 
     // hash from server
     unsigned char *serverHash = readMsg(fdReceivingPipe);
-    cout << "Server hash: " << serverHash << endl;
+//    cout << "Server encrypted hash: " << serverHash << endl;
+    int len = (int) strlen((char *)serverHash) + 1;
+    unsigned char *decHash = new unsigned char[len];
+    decryptMsg(secret, decHash, serverHash);
+    delete [] serverHash;
+
+    cout << "Server hash: " << decHash << endl;
     // comparation
-    cout << "Compare: " << memcmp(buffer, serverHash, 64) << endl;
+    cout << "Compare: " << memcmp(buffer, decHash, 64) << endl;
 
     delete [] buffer;
-    delete [] serverHash;
+    delete [] decHash;
 }
 
 void encryptAndSend(const void *secret, int fdSendingPipe, unsigned char *plaintext) {
-    unsigned char *ciphertext = new unsigned char[strlen((char *) plaintext) * 2 + 1];
+    int len = (int) (strlen((char *) plaintext) * 2 + 1);
+    unsigned char *ciphertext = new unsigned char[len];
     // encrypt by aes
     int ciphertext_len = encryptMsg(secret, plaintext, &ciphertext);
+
+    //TODO testing ----------------------------------
+    int len2 = (int) (strlen((char *)ciphertext) + 1);
+    unsigned char *test = new unsigned char[len2];
+
+    //desifrovani zpravy od klienta -> ziskani plaintextu
+    decryptMsg(secret, test, ciphertext);
+    cout << "COntrol plain text: " << test << endl;
+    // ----------------------------------------------
 
     // send to server
     write(fdSendingPipe, ciphertext, ciphertext_len);
@@ -188,21 +210,22 @@ void cleanUp(void *secret) {
 int encryptMsg(const void *secret, unsigned char *plaintext, unsigned char **ciphertext) {
     int ciphertext_len;
 
-    unsigned char key[32];
-    unsigned char iv[16];
-    memset(key, 0, 32);
-    memset(iv, 0, 16);
+    unsigned char key[33];
+    unsigned char iv[17];
+    memset(key, 0, 33);
+    memset(iv, 0, 17);
 
-    strncpy((char *) key, (char *)secret, 31);
+    strncpy((char *) key, (char *)secret, 32);
 //    cout << "key: " << key << endl;
-    strncpy((char *) iv, (char *)secret + 32, 15);
+    strncpy((char *) iv, (char *)secret + 32, 16);
 //    cout << "iv: " << iv << endl;
-    ciphertext_len = encrypt(plaintext, strlen((char *)plaintext), key, iv, *ciphertext);
+
+    int len = strlen((char *)plaintext);
+    cout << "encrypting lng: " << len << endl;
+    ciphertext_len = encrypt(plaintext, len, key, iv, *ciphertext);
 
     /* Do something useful with the ciphertext here */
-    printf("Ciphertext is:\n");
-//    BIO_dump_fp (stdout, (const char *) *ciphertext, ciphertext_len);
-    cout << "MSG:" << ciphertext << endl;
+    cout << "Ciphertext: " << *ciphertext << endl;
     //send
     return ciphertext_len;
 }
@@ -214,25 +237,27 @@ void initAES() {
 }
 
 void decryptMsg(const void *secret, unsigned char *decryptedtext, unsigned char *str) {/* A 256 bit key */
-    unsigned char key[32];
-    unsigned char iv[16];
-    memset(key, 0, 32);
-    memset(iv, 0, 16);
+    unsigned char key[33];
+    unsigned char iv[17];
+    memset(key, 0, 33);
+    memset(iv, 0, 17);
 
-    strncpy((char *) key, (char *)secret, 31);
+    strncpy((char *) key, (char *)secret, 32);
     cout << "key: " << key << endl;
-    strncpy((char *) iv, (char *)secret + 32, 15);
+    strncpy((char *) iv, (char *)secret + 32, 16);
     cout << "iv: " << iv << endl;
 
     int decryptedtext_len;
 
     /* Decrypt the ciphertext */
-    decryptedtext_len = decrypt(str, strlen((char *) str), key, iv, decryptedtext);
+    int len = (int) strlen((char *) str);
+    decryptedtext_len = decrypt(str, len, key, iv, decryptedtext);
     /* Add a NULL terminator. We are expecting printable text */
+    cout << "Decrypted lng: " << decryptedtext_len << endl;
     decryptedtext[decryptedtext_len] = '\0';
 
     /* Show the decrypted text */
-    printf("Decrypted text is:\n");
+//    printf("Decrypted text is:\n");
 //    printf("%s\n", *decryptedtext);
 }
 
@@ -295,22 +320,20 @@ void init_DH(int fdSendingPipe, int fdReceivingPipe, bool isServer, void **secre
 /* Do something with the shared secret */
 /* Note secret_size may be less than DH_size(privkey) */
 //    printf("The shared secret is:\n");
-//    BIO_dump_fp(stdout, (const char *) *secret, secret_size);
+    BIO_dump_fp(stdout, (const char *) *secret, secret_size);
 
     BN_free(pubkey);
     DH_free(privkey);
 }
 
 void sendMsg(int fdSendingPipe, unsigned char *msg){
-    write(fdSendingPipe, msg, strlen((const char *) msg) + 1);
+    size_t len = strlen((const char *) msg) + 1;
+    write(fdSendingPipe, msg, len);
 }
 
 unsigned char *readMsg(int fdReceivingPipe) {
-    cout<< "0" << endl;
     unsigned char * buf = new unsigned char[2048];
-    cout<< "1" << endl;
     read(fdReceivingPipe, buf, 2048);
-    cout<< "2" << endl;
     return buf;
 }
 
@@ -345,13 +368,10 @@ unsigned char *readMsg(int fdReceivingPipe) {
 //    }
 //}
 
-int log(string mode, string message){
-    cout << mode << ": " << message << endl;
-}
-
 int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
             unsigned char *iv, unsigned char *ciphertext)
 {
+
     EVP_CIPHER_CTX *ctx;
 
     int len;
@@ -359,28 +379,29 @@ int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
     int ciphertext_len;
 
     /* Create and initialise the context */
-    if(!(ctx = EVP_CIPHER_CTX_new())) ;//handleErrors();
+    if(!(ctx = EVP_CIPHER_CTX_new())) handleErrors();
 
     /* Initialise the encryption operation. IMPORTANT - ensure you use a key
      * and IV size appropriate for your cipher
      * In this example we are using 256 bit AES (i.e. a 256 bit key). The
      * IV size for *most* modes is the same as the block size. For AES this
      * is 128 bits */
+    cout << "Control: key:" << strlen((const char *) key) << " iv:" << strlen((const char *) iv) << endl;
     if(1 != EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv))
-        ; //handleErrors();
+        handleErrors();
 
     /* Provide the message to be encrypted, and obtain the encrypted output.
      * EVP_EncryptUpdate can be called multiple times if necessary
      */
     if(1 != EVP_EncryptUpdate(ctx, ciphertext, &len, plaintext, plaintext_len))
-        ; //handleErrors();
+        handleErrors();
     ciphertext_len = len;
     cout << "LEN:" << len << endl;
 
     /* Finalise the encryption. Further ciphertext bytes may be written at
      * this stage.
      */
-    if(1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)); //handleErrors();
+    if(1 != EVP_EncryptFinal_ex(ctx, ciphertext + len, &len)) handleErrors();
     ciphertext_len += len;
 
     /* Clean up */
@@ -392,6 +413,7 @@ int encrypt(unsigned char *plaintext, int plaintext_len, unsigned char *key,
 int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
             unsigned char *iv, unsigned char *plaintext)
 {
+
     EVP_CIPHER_CTX *ctx;
 
     int len;
@@ -434,10 +456,11 @@ int decrypt(unsigned char *ciphertext, int ciphertext_len, unsigned char *key,
 
 void sha256Ecription(unsigned char *text, unsigned char **buf)
 {
+    size_t len = strlen((char *)text);
     unsigned char hash[SHA256_DIGEST_LENGTH];
     SHA256_CTX sha_256;
     SHA256_Init(&sha_256);
-    SHA256_Update(&sha_256, text, strlen((char *)text));
+    SHA256_Update(&sha_256, text, len);
     SHA256_Final(hash, &sha_256);
 
     int i = 0;
@@ -495,4 +518,10 @@ DH *getDH2048()
     if ((dh->p == NULL) || (dh->g == NULL))
     { DH_free(dh); return(NULL); }
     return(dh);
+}
+
+void handleErrors()
+{
+    printf("error\n ");
+    exit(1);
 }
